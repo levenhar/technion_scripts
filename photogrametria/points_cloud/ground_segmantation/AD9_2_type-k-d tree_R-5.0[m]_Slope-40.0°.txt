@@ -1,0 +1,14 @@
+The scanning area box -
+x:(173210.61800000002,173241.944) 
+y:(433834.715,433861.031) 
+z:(6.6770000000000005,18.814) 
+
+ 
+ 
+Filter Parameters - Search Radius: 5.0, Maximum Slope: 40.0°
+Number of points (total) = 3978
+Number of ground points = 2783
+Filtered points (percent) = 42.939%
+ 
+Scanning Time = 8.486 [sec]
+Data Base type - k-d tree

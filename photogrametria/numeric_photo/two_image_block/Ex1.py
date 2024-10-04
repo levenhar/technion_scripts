@@ -1,0 +1,439 @@
+from time import time
+
+import matplotlib.pyplot as plt
+import numpy as np
+from SyntheticObject import syntheticImages
+import copy
+from SingleImage import SingleImage
+from Camera import Camera
+from Point2D import ImagePoints
+from Point3D import GroundPoint
+import scipy.sparse as sc
+import MatrixMethods as MM
+
+def Invers3x3(A):
+    '''
+
+    :param A: a matrix
+    :type A: np.array 3x3
+    :return: the inverse matrix. analytic calculation
+    :rtype: np.array 3x3
+    '''
+    if A.shape[0] != 3 and A.shape[1] != 3 and len(A.shape) !=2:
+        raise Exception("The metrix need to be 3x3")
+    elif np.linalg.det(A) == 0:
+        raise Exception("The metrix is singular")
+    else:
+        A = np.concatenate((np.array([[0, 0, 0]]),A))
+        A = np.concatenate((np.array([[0 ,0, 0, 0]]).T, A), axis=1)
+        a1 = [A[2, 2] * A[3, 3] - A[2, 3] * A[3, 2], A[2, 3] * A[3, 1] - A[2, 1] * A[3, 3], A[2, 1] * A[3, 2] - A[2, 2] * A[3, 1]]
+        a2 = [A[1, 3] * A[3, 2] - A[1, 2] * A[3, 3], A[1, 1] * A[3, 3] - A[1, 3] * A[3, 1], A[1, 2] * A[3, 1] - A[1, 1] * A[3, 2]]
+        a3 = [A[1, 2] * A[2, 3] - A[1, 3] * A[2, 2], A[1, 3] * A[2, 1] - A[1, 1] * A[2, 3], A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]]
+        B = np.array([a1,a2,a3])
+        return 1/np.linalg.det(A[1:,1:])*B.T
+
+
+def InversBLockdiagonal3x3(A):
+    '''
+
+    :param A: block diagonal matrix. each block is 3x3
+    :type A: np.array nxn
+    :return: the inverse matrix
+    :rtype: np.array nxn
+    '''
+    B = np.zeros(A.shape)
+    for i in range(0,A.shape[0],3):
+        B[i:i+3,i:i+3]=Invers3x3(A[i:i+3,i:i+3])
+    return B
+
+
+def computeA(GroundTiePoints,IDsGT,GCPlist,Shapee,ImageTiePointsList,ImageColntrolPointsList):
+    '''
+    function that calculat A matrix and L0 vector in thay full form
+    :param GroundTiePoints: list of all the Tie points
+    :type GroundTiePoints: np.array()
+    :param IDsGT:ID list of the tie points
+    :type IDsGT:np.array()
+    :param GCPlist:list of the GCP coordinates
+    :type GCPlist:list of GroundPoints
+    :param Shapee:the shape of the Ground tie points matrix
+    :type Shapee: tuple
+    :param ImageTiePointsList: lists of the Image coordinate for the tie points
+    :type ImageTiePointsList: list of arrays of ImagePoints
+    :param ImageColntrolPointsList:lists of the Image coordinate for the control points
+    :type ImageColntrolPointsList: list of arrays of ImagePoints
+    :return: A, L0
+    :rtype: np.array
+    '''
+    GroundControlPoints = GroundPoint.listofPoints2Array(GCPlist)
+    IDsG = GroundControlPoints[:, 0]
+    GroundControlPoints = GroundControlPoints[:, 1:].astype(np.float)
+
+    GroundTiePointsM = copy.deepcopy(GroundTiePoints).reshape(Shapee)
+    Alist = []
+    Blist = []
+    L0List= []
+    for i in range(len(ImageList)):
+        ###### order Control points #######################################
+        ImageControlPoints=ImagePoints.listofPoints2Array(ImageColntrolPointsList[i])
+        IDCs=ImageControlPoints[:,0]
+        ImageControlPoints = ImageControlPoints[:,1:].astype(np.float)
+
+        GCP = np.zeros((len(ImageControlPoints),3))
+        for j in range(len(ImageControlPoints)):
+            for id in range(len(IDsG)):
+                if IDCs[j] == IDsG[id]:
+                    GCP[j,:] = GroundControlPoints[id,:]
+
+        ###### order Tie points #######################################
+        ImageTiePoints = ImagePoints.listofPoints2Array(ImageTiePointsList[i])
+        IDs = ImageTiePoints[:, 0]
+        ImageTiePoints = ImageTiePoints[:, 1:].astype(np.float)
+
+        TCP = np.zeros((len(ImageTiePoints), 3))
+        for j in range(len(ImageTiePoints)):
+            for id in range(len(IDsGT)):
+                if IDs[j] == IDsGT[id]:
+                    TCP[j, :] = GroundTiePointsM[id, :]
+
+        Acp=ImageList[i].ComputeDesignMatrix(GCP)
+        Atp=ImageList[i].ComputeDesignMatrix(TCP)
+
+        Lcp=ImageList[i].ComputeObservationVector(GCP)
+        Ltp=ImageList[i].ComputeObservationVector(TCP)
+
+        Bcp=np.zeros((len(Acp),3*len(GroundTiePointsM)))
+        Btp=np.zeros((len(Atp),3*len(GroundTiePointsM)))
+
+        c=0
+        for i in range(0,len(Atp),2):
+            Btp[i:i+2,c:c+3]=-Atp[i:i+2,0:3]
+            c+=3
+        Ai=np.concatenate((Acp,Atp))
+        Bi=np.concatenate((Bcp,Btp))
+        L0i=np.concatenate((Lcp,Ltp))
+        Alist.append(Ai)
+        Blist.append(Bi)
+        L0List.append(L0i)
+
+    m=0
+    n=0
+    for k in range(len(Alist)):
+        m += Alist[k].shape[1]
+        n += Alist[k].shape[0]
+
+    A=np.zeros((n,m))
+    offsetR=0
+    offsetC=0
+    for k in range(len(Alist)):
+        A[offsetR:offsetR+Alist[k].shape[0], offsetC:offsetC+Alist[k].shape[1]] = Alist[k]
+        offsetR += Alist[k].shape[0]
+        offsetC += Alist[k].shape[1]
+
+    B=np.concatenate(Blist)
+    A=np.concatenate((A,B),axis=1)
+    L0=np.concatenate(L0List)
+
+    return A, L0
+
+def computeLb(ImageTiePointsList,ImageColntrolPointsList):
+    '''
+    function that calculate Lb vector
+    :param ImageTiePointsList: lists of the Image coordinate for the tie points
+    :type ImageTiePointsList: list of arrays of ImagePoints
+    :param ImageColntrolPointsList:lists of the Image coordinate for the control points
+    :type ImageColntrolPointsList: list of arrays of ImagePoints
+    :return: Lb
+    :rtype: np.array nx1
+    '''
+    LbList=[]
+    for i in range(len(ImageTiePointsList)):
+        ITP = ImagePoints.listofPoints2Array(ImageTiePointsList[i])[:, 1:].astype(np.float)
+        ICP = ImagePoints.listofPoints2Array(ImageColntrolPointsList[i])[:, 1:].astype(np.float)
+        Lbi=np.concatenate((ICP.reshape(-1,),ITP.reshape(-1,)))
+        LbList.append(Lbi)
+
+    Lb = np.concatenate(LbList)
+    return Lb.reshape((len(Lb),1))
+
+
+def ComputeNU(GroundTiePoints,IDsGT,GCPlist,Shapee,ImageTiePointsList,ImageColntrolPointsList):
+    '''
+    function that calculat N matrix and u vector in directly, according to A blocks
+    :param GroundTiePoints: list of all the Tie points
+    :type GroundTiePoints: np.array()
+    :param IDsGT:ID list of the tie points
+    :type IDsGT:np.array()
+    :param GCPlist:list of the GCP coordinates
+    :type GCPlist:list of GroundPoints
+    :param Shapee:the shape of the Ground tie points matrix
+    :type Shapee: tuple
+    :param ImageTiePointsList: lists of the Image coordinate for the tie points
+    :type ImageTiePointsList: list of arrays of ImagePoints
+    :param ImageColntrolPointsList:lists of the Image coordinate for the control points
+    :type ImageColntrolPointsList: list of arrays of ImagePoints
+    :return: N11, N22inverse, U1, U2, N12, N22
+    :rtype: np.array / bsr_matrix
+    '''
+    GroundControlPoints = GroundPoint.listofPoints2Array(GCPlist)
+    IDsG = GroundControlPoints[:, 0]
+    GroundControlPoints = GroundControlPoints[:, 1:].astype(np.float)
+
+    GroundTiePointsM = copy.deepcopy(GroundTiePoints).reshape(Shapee)
+    Alist = []
+    Blist = []
+    LList = []
+    LtList = []
+    LcList = []
+    TieindexList = []
+    for i in range(len(ImageList)):
+        ###### order Control points #######################################
+        ImageControlPoints = ImagePoints.listofPoints2Array(ImageColntrolPointsList[i])
+        IDCs = ImageControlPoints[:, 0]
+        ImageControlPoints = ImageControlPoints[:, 1:].astype(np.float)
+
+        GCP = np.zeros((len(ImageControlPoints), 3))
+        for j in range(len(ImageControlPoints)):
+            for id in range(len(IDsG)):
+                if IDCs[j] == IDsG[id]:
+                    GCP[j, :] = GroundControlPoints[id, :]
+
+        ###### order Tie points #######################################
+        ImageTiePoints = ImagePoints.listofPoints2Array(ImageTiePointsList[i])
+        IDs = ImageTiePoints[:, 0]
+        TieindexList.append(IDs)
+        ImageTiePoints = ImageTiePoints[:, 1:].astype(np.float)
+
+        TCP = np.zeros((len(ImageTiePoints), 3))
+        for j in range(len(ImageTiePoints)):
+            for id in range(len(IDsGT)):
+                if IDs[j] == IDsGT[id]:
+                    TCP[j, :] = GroundTiePointsM[id, :]
+
+        Acp = ImageList[i].ComputeDesignMatrix(GCP)
+        Atp = ImageList[i].ComputeDesignMatrix(TCP)
+
+        Lcp = ImageList[i].ComputeObservationVector(GCP)
+        Ltp = ImageList[i].ComputeObservationVector(TCP)
+
+        Ai = np.concatenate((Acp, Atp))
+        Alist.append(Ai)
+        Blist.append(-Atp[:,0:3])
+
+        ICP = ImagePoints.listofPoints2Array(ImageColntrolPointsList[i])[:, 1:].astype(np.float)
+        ITP = ImagePoints.listofPoints2Array(ImageTiePointsList[i])[:, 1:].astype(np.float)
+
+        Lc = ICP.reshape(-1,) - Lcp
+        Lt = ITP.reshape(-1,) - Ltp
+
+        Li = np.concatenate((Lc, Lt))
+        LList.append(Li)
+        LtList.append(Lt)
+        LcList.append(Lc)
+
+
+    N11list = []
+    for i in range(len(Alist)):
+        N = Alist[i].T@Alist[i]
+        N11list.append(N)
+
+    sparse_matrices = [sc.dia_matrix(array) for array in N11list]
+    diagonal_matrix = sc.block_diag(sparse_matrices)
+    N11 = diagonal_matrix.tobsr()
+
+    N22BlockList = [np.zeros((3,3)) for _ in range(len(GroundTiePointsM))]
+    N12 = np.zeros((6*len(ImageList),3*len(GroundTiePointsM)))
+    U = np.zeros((6*len(ImageList)+3*len(GroundTiePointsM),1))
+    for i in range(len(Alist)):
+        U[6*i:6*i+6,:] = (Alist[i].T@LList[i]).reshape((6,1))
+
+    c=0
+    for i in range(len(GroundTiePointsM)):
+        GTPid = IDsGT[i]
+        for b in range(len(Blist)):
+            ll = LtList[b][2 * i:2 * i + 2].reshape((2, 1))
+            ITPid = TieindexList[b][i]
+
+            if GTPid == ITPid:
+                aindex = np.where(IDsGT == ITPid)[0][0]
+                bb = Blist[b][2 * i:2 * i + 2, :]
+                N22BlockList[i] += bb.T @ bb
+                offset = len(LcList[b])
+                aa = Alist[b][offset + 2 * aindex:offset + 2 * aindex + 2,:]
+                N12[6 * b:6 * b + 6, 3 * i:3 * i + 3] += aa.T @ bb
+                U[6 * len(ImageList) + c:6 * len(ImageList) + c + 3, :] += bb.T @ ll
+        c += 3
+    sparse_matrices1 = [sc.dia_matrix(array) for array in N22BlockList]
+    diagonal_matrix1 = sc.block_diag(sparse_matrices1)
+    N22 = diagonal_matrix1.tobsr()
+
+    N22inverse = sc.bsr_matrix(InversBLockdiagonal3x3(N22.toarray()))
+
+    U1 = U[:6 * len(ImageList), 0]
+    U2 = U[6*len(ImageList):, 0]
+
+    return N11, N22inverse, U1, U2, N12, N22
+
+
+ControlTemplate = "Corner"
+OriantationList, GroundTiepoints, ImageTiePointsList, ImageColntrolPointsList, GCPlist = syntheticImages(150, 230, 100,
+                                                                                                         0.8, 4,
+                                                                                                         ControlTemplate,
+                                                                                                         10)
+
+### Add Noises ###########################################################################################################
+GTruthOrintation = []
+GTruthTGP = []
+for i in range(len(OriantationList)):
+    GTruthOrintation.append(copy.copy(OriantationList[i]))
+for i in range(len(GroundTiepoints)):
+    GTruthTGP.append(copy.copy(GroundTiepoints[i]))
+
+for img in OriantationList:
+    noiseM = 10 * np.random.random(3)
+    img["X0"] += noiseM[0]
+    img["Y0"] += noiseM[1]
+    img["Z0"] += noiseM[2]
+    noiseS = np.pi/180 * np.random.random(3)
+    img["omega"] += noiseS[0]
+    img["phi"] += noiseS[1]
+    img["kappa"] += noiseS[2]
+
+for I in range(len(ImageTiePointsList)):
+    for P in ImageTiePointsList[I]:
+        P.AddNoise(10 * 10 ** -3)
+
+for I in range(len(ImageColntrolPointsList)):
+    for P in ImageColntrolPointsList[I]:
+        P.AddNoise(10 * 10 ** -3)
+
+for CP in GroundTiepoints:
+    CP.AddNoise(5)
+######################################################################################################################################################################
+
+SoulutionType = 10
+
+####### Regular Sulotion #################################################################################################################################
+Cam1=Camera(150, [0,0], [], [], [],230)
+ImageList = []
+for i in range(len(OriantationList)):
+    ImageList.append(SingleImage(Cam1,i))
+    ImageList[i].exteriorOrientationParameters = OriantationList[i]
+
+GroundTiePoints = GroundPoint.listofPoints2Array(GroundTiepoints)
+IDsGT = GroundTiePoints[:, 0]
+GroundTiePoints = GroundTiePoints[:, 1:].astype(np.float)
+Shapee=GroundTiePoints.shape
+GroundTiePoints = GroundTiePoints.reshape(-1,)
+dXo=[np.inf,np.Inf]
+
+time1 = time()
+if SoulutionType == 1:
+    c=0
+    while np.linalg.norm(dXo)>0.001:
+        A, L0= computeA(GroundTiePoints,IDsGT,GCPlist,Shapee,ImageTiePointsList,ImageColntrolPointsList)
+        L0 = L0.reshape((len(L0),1))
+        Lb = computeLb(ImageTiePointsList,ImageColntrolPointsList)
+        N = A.T @ A
+
+        if np.linalg.norm(dXo) == np.Inf:
+            plt.imshow(1 - np.ceil(abs(A) / abs(A).max()), cmap="gray")
+            plt.show()
+            plt.imshow(1 - np.ceil(abs(N) / abs(N).max()), cmap="gray")
+            plt.show()
+
+        L=Lb-L0
+        U=A.T@L
+        dXo=np.linalg.inv(N)@U
+
+        GroundTiePoints = GroundTiePoints + dXo[-len(GroundTiePoints):,0]
+        for j in range(len(ImageList)):
+            ImageList[j].exteriorOrientationParameters["X0"] += dXo[j * 6]
+            ImageList[j].exteriorOrientationParameters["Y0"] += dXo[j * 6 + 1]
+            ImageList[j].exteriorOrientationParameters["Z0"] += dXo[j * 6 + 2]
+            ImageList[j].exteriorOrientationParameters["omega"] += dXo[j * 6 + 3]
+            ImageList[j].exteriorOrientationParameters["phi"] += dXo[j * 6 + 4]
+            ImageList[j].exteriorOrientationParameters["kappa"] += dXo[j * 6 + 5]
+        c+=1
+    time2 = time()
+
+    V=A@dXo-L
+    sigma = (V.T@V)/(A.shape[0]-A.shape[1])
+
+    diff = GroundPoint.listofPoints2Array(GTruthTGP)[:,1:].astype(np.float) - GroundTiePoints.reshape(Shapee)
+    diffOriantationList = []
+    for i in range(len(GTruthOrintation)):
+        Result = OriantationList[i]
+        GT=GTruthOrintation[i]
+        diffOriantation = {}
+        for key in Result:
+            value1 = Result[key][0]  # Get value from dict1
+            value2 = GT.get(key, 0)  # Get value from dict2 if present, otherwise use 0
+            diffOriantation[key] = abs(value1 - value2)  # Subtract values and store in result
+            if key == "omega" or key == "kappa" or key == "phi":
+                diffOriantation[key] = diffOriantation[key]*206265
+        diffOriantationList.append(diffOriantation)
+
+######### Sparse Matrix Sulotion ##################################################################################################################
+
+#the comment in green it is code for compering between the two way to calculate the N matrix.
+#we convert it to comment of measure the time.
+
+else:
+    c=0
+    while np.linalg.norm(dXo)>0.001:
+        '''A, L0 = computeA(GroundTiePoints, IDsGT, GCPlist, Shapee, ImageTiePointsList, ImageColntrolPointsList)
+        L0 = L0.reshape((len(L0), 1))
+        Lb = computeLb(ImageTiePointsList, ImageColntrolPointsList)
+        Ntag = A.T @ A
+        Utag = A.T @ (Lb-L0)'''
+
+        N11, N22inverse, U1, U2, N12 , N22= ComputeNU(GroundTiePoints, IDsGT, GCPlist, Shapee, ImageTiePointsList, ImageColntrolPointsList)
+        N = N11 - N12 @ N22inverse @ N12.T
+        U = U1 - N12 @ N22inverse @ U2
+
+        '''N1 = np.concatenate((N11.toarray(),N12),axis=1)
+        N2 = np.concatenate((N12.T,N22.toarray()), axis = 1)
+        Nfull = np.concatenate((N1,N2))
+        Ufull = np.concatenate((U1,U2))'''
+
+        N = np.array(N)
+        dXo = np.linalg.inv(N)@U
+
+        for j in range(len(ImageList)):
+            ImageList[j].exteriorOrientationParameters["X0"] += dXo[j * 6]
+            ImageList[j].exteriorOrientationParameters["Y0"] += dXo[j * 6 + 1]
+            ImageList[j].exteriorOrientationParameters["Z0"] += dXo[j * 6 + 2]
+            ImageList[j].exteriorOrientationParameters["omega"] += dXo[j * 6 + 3]
+            ImageList[j].exteriorOrientationParameters["phi"] += dXo[j * 6 + 4]
+            ImageList[j].exteriorOrientationParameters["kappa"] += dXo[j * 6 + 5]
+
+        c+=1
+    time2 = time()
+
+    diffOriantationList = []
+    for i in range(len(GTruthOrintation)):
+        Result = OriantationList[i]
+        GT = GTruthOrintation[i]
+        diffOriantation = {}
+        for key in Result:
+            value1 = Result[key] # Get value from dict1
+            value2 = GT.get(key, 0)  # Get value from dict2 if present, otherwise use 0
+            diffOriantation[key] = abs(value1 - value2)  # Subtract values and store in result
+            if key == "omega" or key == "kappa" or key == "phi":
+                diffOriantation[key] = diffOriantation[key] * 206265
+        diffOriantationList.append(diffOriantation)
+
+
+print(f"the calculate time is {time2-time1} in second")
+
+Diffarray = np.array([])
+for i in range(len(diffOriantationList)):
+    values = np.array(list(diffOriantationList[i].values()))
+    Diffarray = np.concatenate((Diffarray,values))
+Diffarray = Diffarray.reshape((len(diffOriantationList),6))
+MM.PrintMatrix(Diffarray)
+
+
+
+
